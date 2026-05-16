@@ -48,7 +48,7 @@ export default async function EventInspectorPage({
             <Badge variant={isSuccess ? "default" : "destructive"} className={isSuccess ? "bg-green-600" : ""}>
               {event.status}
             </Badge>
-            {event.status === "FAILED" && (
+            {event.status === "FAILED" || event.status === "PENDING" && (
               <ReplayButton eventId={event.id} />
             )}
         </div>

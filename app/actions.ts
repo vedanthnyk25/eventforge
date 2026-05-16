@@ -18,20 +18,24 @@ export async function replayWebhook(eventId: string) {
     if (!event) {
       throw new Error("Event not found");
     }
+
+    if(event.status === "DELIVERED") {
+      return { success: false, error: "Event already delivered successfully" };
+    }
     
     const headersList = await headers();
     const host = headersList.get("host") || "localhost:3000";
     const protocol = host.includes("localhost") ? "http" : "https";
     const workerUrl = `${protocol}://${host}/api/worker`;
 
-    await prisma.webhookEvent.update({
-      where: { id: eventId },
-      data: { status: "PENDING" },
-    });
-
     await qstash.publishJSON({
       url: workerUrl,
       body: { eventId: event.id },
+    });
+    
+    await prisma.webhookEvent.update({
+      where: { id: eventId },
+      data: { status: "PENDING" },
     });
 
     revalidatePath(`/dashboard/event/${eventId}`);

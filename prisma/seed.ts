@@ -20,8 +20,8 @@ async function main() {
     data: {
       description: "Local Test Endpoint",
       // YOUR Webhook.site URL
-      targetUrl: "https://webhook.site/7b5f6600-6569-4c1c-81bb-e22f54f8a116", 
-      provider: "github",
+      targetUrl: "https://webhook.site/5ddb74a5-12b0-4025-994a-ed2422219e42", 
+      provider: "none",
       secret: "my_secret_key_123" 
     }
   })

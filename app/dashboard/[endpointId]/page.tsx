@@ -5,11 +5,17 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { AutoRefresh } from "@/app/components/AutoRefresh";
+import { headers } from "next/headers";
 
 export default async function EndpointEventsPage(
   {params,}: {params: Promise<{endpointId: string}>} 
 ) {
   const {endpointId}= await params;
+
+  const headerList= await headers();
+  const host= headerList.get("host")?? "localhost:3000";
+  const protocol= host.includes("localhost") ? "http" : "https";
+  const ingestUrl= `${protocol}://${host}/api/ingest/${endpointId}`;
 
   const endpoint= await prisma.webhookEndpoint.findUnique({
     where: {
@@ -52,7 +58,7 @@ export default async function EndpointEventsPage(
         <div>
           <p className="text-sm font-medium mb-1">Your Ingest URL</p>
           <code className="text-xs bg-background p-1.5 rounded border select-all">
-            http://localhost:3000/api/ingest/{endpoint.id}
+            {ingestUrl}
           </code>
         </div>
         <Badge variant="outline" className="uppercase">{endpoint.provider} secured</Badge>

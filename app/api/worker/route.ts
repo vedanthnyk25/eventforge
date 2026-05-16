@@ -1,87 +1,117 @@
-import prisma from '@/lib/prisma';
-import { NextResponse, NextRequest } from 'next/server';
+import prisma from "@/lib/prisma";
+import { NextResponse, NextRequest } from "next/server";
+import { Receiver } from "@upstash/qstash";
+import { z } from "zod";
+
+const workerBodySchema = z.object({
+  eventId: z.string().uuid("eventId must be a valid UUID"),
+});
+
+// QStash Receiver verifies that this request genuinely came from Upstash
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
 
 export async function POST(request: NextRequest) {
+
+  const rawBody = await request.text();
+
+  const isValid = await receiver.verify({
+    signature: request.headers.get("upstash-signature") ?? "",
+    body: rawBody,
+  }).catch(() => false); // verify() throws on failure; we convert to false
+
+  if (!isValid) {
+    console.warn("Worker received request with invalid QStash signature — rejected.");
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let parsedBody: { eventId: string };
   try {
-  
-    const body = await request.json();
-    const { eventId } = body;
+    const json = JSON.parse(rawBody);
+    const result = workerBodySchema.safeParse(json);
 
-    if (!eventId || typeof eventId !== 'string' || eventId.trim() === '') {
-      return NextResponse.json({ error: 'eventId is required' }, { status: 400 });
+    if (!result.success) {
+      console.warn("Worker received invalid body:", result.error.issues);
+      return NextResponse.json(
+        { error: "Invalid request body", details: result.error.issues },
+        { status: 400 }
+      );
     }
+    parsedBody = result.data;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
-    // Database Lookup: Get the payload
+  const { eventId } = parsedBody;
+
+  try {
     const webhookEvent = await prisma.webhookEvent.findUnique({
       where: { id: eventId },
-      include: {endpoint: true},
+      include: { endpoint: true },
     });
 
     if (!webhookEvent || !webhookEvent.endpoint) {
-      return NextResponse.json({ error: 'Webhook event or endpoint not found' }, { status: 404 });
+      return NextResponse.json(
+        { error: "Webhook event or endpoint not found" },
+        { status: 404 }
+      );
     }
 
-    const DESTINATION_URL= webhookEvent.endpoint.targetUrl;
-    //const DESTINATION_URL = "http://localhost:9999/broken";
+    const DESTINATION_URL = webhookEvent.endpoint.targetUrl;
 
-    // Execution: Send the webhook to the destination
-    const start = Date.now();
     let responseStatus = 0;
-    let responseBody = '';
+    let responseBody = "";
+    const start = Date.now();
 
     try {
       const res = await fetch(DESTINATION_URL, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
-          'X-Webhook-Event-ID': webhookEvent.id, // Custom header for tracing
+          "Content-Type": "application/json",
+          "X-Webhook-Event-ID": webhookEvent.id,
         },
         body: JSON.stringify(webhookEvent.payload),
       });
 
       responseStatus = res.status;
       responseBody = await res.text();
-      console.log(`Delivery attempt to ${DESTINATION_URL} responded with status ${responseStatus}`);
-
-    } catch (error) {
-      // Network failures (DNS, Timeout, etc.)
-      console.error('Error delivering webhook event:', error);
+      console.log(`Delivery to ${DESTINATION_URL} → HTTP ${responseStatus}`);
+    } catch (fetchError) {
+      console.error("Network error delivering webhook:", fetchError);
       responseStatus = 500;
-      responseBody = String(error);
+      responseBody = String(fetchError);
     }
 
     const duration = Date.now() - start;
 
-    // Logging: Record the attempt
+    // Log the attempt and update status
     await prisma.deliveryAttempt.create({
       data: {
         webhookEventId: webhookEvent.id,
-        responseStatus: responseStatus,
-        responseBody: responseBody.slice(0, 2000), // Truncate long error messages
-      }
+        responseStatus,
+        responseBody: responseBody.slice(0, 2000),
+      },
     });
 
-    // Update Status: Mark as DELIVERED or FAILED
     const isSuccess = responseStatus >= 200 && responseStatus < 300;
 
     await prisma.webhookEvent.update({
       where: { id: webhookEvent.id },
-      data: { status: isSuccess ? 'DELIVERED' : 'FAILED' },
+      data: { status: isSuccess ? "DELIVERED" : "FAILED" },
     });
 
-    // Response to QStash
     if (isSuccess) {
-      console.log(`Webhook event ${webhookEvent.id} delivered successfully in ${duration}ms`);
-      return NextResponse.json({ message: 'Webhook event delivered successfully' }, { status: 200 });
+      console.log(`Event ${webhookEvent.id} delivered in ${duration}ms`);
+      return NextResponse.json({ message: "Delivered successfully" }, { status: 200 });
     } else {
-      console.log(`Webhook event ${webhookEvent.id} delivery failed with status ${responseStatus}`);
-      // Return 500 to trigger QStash retry
-      return NextResponse.json({ error: 'Webhook event delivery failed' }, { status: 500 });
+      // Return 500 to signal QStash to retry
+      console.warn(`Event ${webhookEvent.id} delivery failed (HTTP ${responseStatus})`);
+      return NextResponse.json({ error: "Delivery failed" }, { status: 500 });
     }
-
   } catch (error) {
-    // Catch unexpected errors (Database down, Bad JSON, etc.)
-    console.error('Unexpected error in webhook worker:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    console.error("Unexpected worker error:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

@@ -10,9 +10,7 @@ export class GitHubProvider implements WebhookProvider {
     
     const signature= headers["x-hub-signature-256"];
 
-    if(!signature) return false;
-
-    const WEBHOOK_SECRET= process.env.WEBHOOK_SECRET || "";
+    if(!signature || typeof signature !== "string") return false;
 
     const hmac= crypto.createHmac("sha256", secret);
     hmac.update(JSON.stringify(body));
