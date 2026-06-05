@@ -2,7 +2,7 @@
 import "@/app/globals.css"; // Shadcn created this file during init
 
 export const metadata = {
-  title: "HookDeck",
+  title: "EventForge",
   description: "Enterprise Webhook Management",
 };
 
