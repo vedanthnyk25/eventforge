@@ -2,14 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma"
 import {Client} from "@upstash/qstash";
 import { getProvider } from "@/lib/providers/factory";
-import { error } from "console";
 
 const qstash = new Client({
   token: process.env.QSTASH_TOKEN!,
 });
 
 export async function POST(req: NextRequest,
-  { params }: { params: { endpointId: string } }
+  { params }: { params: Promise<{ endpointId: string }> }
 ) {
 
   const { endpointId } = await params;
@@ -53,11 +52,11 @@ export async function POST(req: NextRequest,
     });
 
     await qstash.publishJSON({
-      url: `https://${req.headers.get("host")}/api/worker`,
+      url: `${process.env.APP_URL}/api/worker`,
       body: {
-        eventId: webhookEvent.id
-      }
-    })
+      eventId: webhookEvent.id,
+      },
+    });
 
     console.log("Enqueued webhook event for processing:", webhookEvent.id);
     

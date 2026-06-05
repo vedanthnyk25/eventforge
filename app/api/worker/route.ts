@@ -1,7 +1,7 @@
 import prisma from "@/lib/prisma";
 import { NextResponse, NextRequest } from "next/server";
 import { Receiver } from "@upstash/qstash";
-import { z } from "zod";
+import {z} from "zod";
 
 const workerBodySchema = z.object({
   eventId: z.string().uuid("eventId must be a valid UUID"),

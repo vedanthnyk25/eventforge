@@ -1,0 +1,2022 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+app/
+  api/
+    ingest/
+      [endpointId]/
+        route.ts
+    worker/
+      route.ts
+  components/
+    AutoRefresh.tsx
+    ReplayButton.tsx
+  dashboard/
+    [endpointId]/
+      page.tsx
+    event/
+      [eventId]/
+        page.tsx
+    page.tsx
+  actions.ts
+  globals.css
+  layout.tsx
+  page.tsx
+components/
+  ui/
+    badge.tsx
+    button.tsx
+    card.tsx
+    separator.tsx
+    table.tsx
+lib/
+  providers/
+    factory.ts
+    github.ts
+    none.ts
+    stripe.ts
+    types.ts
+  prisma.ts
+  utils.ts
+prisma/
+  migrations/
+    20260125114653_001_init/
+      migration.sql
+    20260302111548_add_endpoint_model/
+      migration.sql
+    migration_lock.toml
+  schema.prisma
+  seed.ts
+public/
+  file.svg
+  globe.svg
+  next.svg
+  vercel.svg
+  window.svg
+.gitignore
+components.json
+eslint.config.mjs
+next.config.ts
+package.json
+postcss.config.js
+postcss.config.mjs
+prisma.config.ts
+README.md
+tailwind.config.js
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="app/api/ingest/[endpointId]/route.ts">
+import { NextRequest, NextResponse } from "next/server";
+import prisma from "@/lib/prisma"
+import {Client} from "@upstash/qstash";
+import { getProvider } from "@/lib/providers/factory";
+import { error } from "console";
+
+const qstash = new Client({
+  token: process.env.QSTASH_TOKEN!,
+});
+
+export async function POST(req: NextRequest,
+  { params }: { params: { endpointId: string } }
+) {
+
+  const { endpointId } = await params;
+  try {
+
+    const endpoint= await prisma.webhookEndpoint.findUnique({
+      where: {id:endpointId},
+    });
+
+    if(!endpoint){
+      return NextResponse.json({error: "Endpoint not found"}, {status: 404});
+    }
+    
+    const body = await req.json();
+
+    if (!body) {
+      return NextResponse.json(
+        { error: "Invalid JSON body" },
+        { status: 400 }
+      );
+    }
+
+    const provider= getProvider(endpoint.provider);
+    const headers= Object.fromEntries(req.headers.entries());
+
+    const isValid= await provider.verify(body, headers, endpoint.secret || "");
+
+    if (!isValid) {
+      console.warn(`Blocked unauthorized request from endpoint: ${endpointId}`);
+      return NextResponse.json({ error: "Unauthorized: Invalid Signature" }, { status: 401 });
+    }
+
+    // Store the webhook event in the database
+    const webhookEvent = await prisma.webhookEvent.create({
+      data: {
+        endpointId:endpointId,
+        payload: body,
+        headers: headers,
+        status: "PENDING",
+      }
+    });
+
+    await qstash.publishJSON({
+      url: `https://${req.headers.get("host")}/api/worker`,
+      body: {
+        eventId: webhookEvent.id
+      }
+    })
+
+    console.log("Enqueued webhook event for processing:", webhookEvent.id);
+    
+    console.log("Received webhook:", body); 
+
+    return NextResponse.json({ status: "accepted", id: webhookEvent.id }, { status: 200 });
+
+  } catch (error) {
+    // Handle JSON parsing errors or DB failures
+    console.error("Ingest error:", error);
+    return NextResponse.json(
+      { error: "Internal Server Error" },
+      { status: 500 }
+    );
+  }
+}
+</file>
+
+<file path="app/components/AutoRefresh.tsx">
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+
+export function AutoRefresh({ interval = 3000 }: { interval?: number }) {
+  const router = useRouter();
+
+  useEffect(() => {
+    // Set up a timer to silently refresh the Server Component data
+    const id = setInterval(() => {
+      router.refresh(); 
+    }, interval);
+
+    // Clean up the timer when we leave the page
+    return () => clearInterval(id);
+  }, [router, interval]);
+
+  // This component doesn't render any UI
+  return null; 
+}
+</file>
+
+<file path="app/components/ReplayButton.tsx">
+"use client";
+
+import { useTransition } from "react";
+import { Button } from "@/components/ui/button";
+import { replayWebhook } from "@/app/actions";
+
+export function ReplayButton({ eventId }: { eventId: string }) {
+  // useTransition gives us a beautiful loading state without manually managing boolean flags
+  const [isPending, startTransition] = useTransition();
+
+  const handleReplay = () => {
+    startTransition(async () => {
+      await replayWebhook(eventId);
+    });
+  };
+
+  return (
+    <Button 
+      onClick={handleReplay} 
+      disabled={isPending}
+      className="font-semibold"
+    >
+      {isPending ? "Replaying..." : "🔄 Replay Event"}
+    </Button>
+  );
+}
+</file>
+
+<file path="app/dashboard/page.tsx">
+import prisma from "@/lib/prisma";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import Link from "next/link";
+
+export  default async function DashboardPage() {
+  const endpoints= await prisma.webhookEndpoint.findMany({
+    orderBy: {
+      createdAt: "desc"
+    },
+    include: {
+      _count: {
+        select: {
+          events: true
+        }
+      }
+    }
+  });
+
+  return (
+    <div className="container mx-auto py-10 max-w-5xl">
+      <div className="flex justify-between items-center mb-8">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Webhooks</h1>
+          <p className="text-muted-foreground mt-2">Manage your webhook endpoints and monitor events.</p>
+        </div>
+        <Button disabled>+ New Endpoint</Button> {/* Disabled for now, we'll build this later */}
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {endpoints.map((endpoint) => (
+          <Card key={endpoint.id} className="flex flex-col justify-between hover:border-primary/50 transition-colors shadow-sm">
+            <CardHeader>
+              <div className="flex justify-between items-start mb-2">
+                <Badge variant={endpoint.provider === 'none' ? 'secondary' : 'default'} className="uppercase text-[10px] tracking-wider">
+                  {endpoint.provider}
+                </Badge>
+              </div>
+              <CardTitle className="text-xl">{endpoint.description || "Unnamed Endpoint"}</CardTitle>
+              <CardDescription className="truncate text-xs mt-1" title={endpoint.targetUrl}>
+                Target: {endpoint.targetUrl}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between text-sm border-t pt-4">
+                  <span className="text-muted-foreground">Total Events</span>
+                  <span className="font-medium bg-secondary px-2 py-0.5 rounded-md">{endpoint._count.events}</span>
+                </div>
+                {/* We will build this detail page next */}
+                <Link href={`/dashboard/${endpoint.id}`}>
+                  <Button variant="secondary" className="w-full">
+                    View Events
+                  </Button>
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+
+        {endpoints.length === 0 && (
+          <div className="col-span-full text-center py-12 border-2 border-dashed rounded-lg text-muted-foreground">
+            No endpoints found. Run your seed script to create one!
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/globals.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem
+  }
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 210 40% 98%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 212.7 26.8% 83.9%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%
+  }
+}
+</file>
+
+<file path="app/page.tsx">
+
+</file>
+
+<file path="components/ui/badge.tsx">
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const badgeVariants = cva(
+  "inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  {
+    variants: {
+      variant: {
+        default:
+          "border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80",
+        secondary:
+          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        destructive:
+          "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
+        outline: "text-foreground",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> {}
+
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return (
+    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+  )
+}
+
+export { Badge, badgeVariants }
+</file>
+
+<file path="components/ui/button.tsx">
+import * as React from "react"
+import { Slot } from "@radix-ui/react-slot"
+import { cva, type VariantProps } from "class-variance-authority"
+
+import { cn } from "@/lib/utils"
+
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default:
+          "bg-primary text-primary-foreground shadow hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+        outline:
+          "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",
+        secondary:
+          "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+        ghost: "hover:bg-accent hover:text-accent-foreground",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-9 px-4 py-2",
+        sm: "h-8 rounded-md px-3 text-xs",
+        lg: "h-10 rounded-md px-8",
+        icon: "h-9 w-9",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, asChild = false, ...props }, ref) => {
+    const Comp = asChild ? Slot : "button"
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...props}
+      />
+    )
+  }
+)
+Button.displayName = "Button"
+
+export { Button, buttonVariants }
+</file>
+
+<file path="components/ui/card.tsx">
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+const Card = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      "rounded-xl border bg-card text-card-foreground shadow",
+      className
+    )}
+    {...props}
+  />
+))
+Card.displayName = "Card"
+
+const CardHeader = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex flex-col space-y-1.5 p-6", className)}
+    {...props}
+  />
+))
+CardHeader.displayName = "CardHeader"
+
+const CardTitle = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("font-semibold leading-none tracking-tight", className)}
+    {...props}
+  />
+))
+CardTitle.displayName = "CardTitle"
+
+const CardDescription = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("text-sm text-muted-foreground", className)}
+    {...props}
+  />
+))
+CardDescription.displayName = "CardDescription"
+
+const CardContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn("p-6 pt-0", className)} {...props} />
+))
+CardContent.displayName = "CardContent"
+
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("flex items-center p-6 pt-0", className)}
+    {...props}
+  />
+))
+CardFooter.displayName = "CardFooter"
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent }
+</file>
+
+<file path="components/ui/separator.tsx">
+"use client"
+
+import * as React from "react"
+import * as SeparatorPrimitive from "@radix-ui/react-separator"
+
+import { cn } from "@/lib/utils"
+
+const Separator = React.forwardRef<
+  React.ElementRef<typeof SeparatorPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root>
+>(
+  (
+    { className, orientation = "horizontal", decorative = true, ...props },
+    ref
+  ) => (
+    <SeparatorPrimitive.Root
+      ref={ref}
+      decorative={decorative}
+      orientation={orientation}
+      className={cn(
+        "shrink-0 bg-border",
+        orientation === "horizontal" ? "h-[1px] w-full" : "h-full w-[1px]",
+        className
+      )}
+      {...props}
+    />
+  )
+)
+Separator.displayName = SeparatorPrimitive.Root.displayName
+
+export { Separator }
+</file>
+
+<file path="components/ui/table.tsx">
+import * as React from "react"
+
+import { cn } from "@/lib/utils"
+
+const Table = React.forwardRef<
+  HTMLTableElement,
+  React.HTMLAttributes<HTMLTableElement>
+>(({ className, ...props }, ref) => (
+  <div className="relative w-full overflow-auto">
+    <table
+      ref={ref}
+      className={cn("w-full caption-bottom text-sm", className)}
+      {...props}
+    />
+  </div>
+))
+Table.displayName = "Table"
+
+const TableHeader = React.forwardRef<
+  HTMLTableSectionElement,
+  React.HTMLAttributes<HTMLTableSectionElement>
+>(({ className, ...props }, ref) => (
+  <thead ref={ref} className={cn("[&_tr]:border-b", className)} {...props} />
+))
+TableHeader.displayName = "TableHeader"
+
+const TableBody = React.forwardRef<
+  HTMLTableSectionElement,
+  React.HTMLAttributes<HTMLTableSectionElement>
+>(({ className, ...props }, ref) => (
+  <tbody
+    ref={ref}
+    className={cn("[&_tr:last-child]:border-0", className)}
+    {...props}
+  />
+))
+TableBody.displayName = "TableBody"
+
+const TableFooter = React.forwardRef<
+  HTMLTableSectionElement,
+  React.HTMLAttributes<HTMLTableSectionElement>
+>(({ className, ...props }, ref) => (
+  <tfoot
+    ref={ref}
+    className={cn(
+      "border-t bg-muted/50 font-medium [&>tr]:last:border-b-0",
+      className
+    )}
+    {...props}
+  />
+))
+TableFooter.displayName = "TableFooter"
+
+const TableRow = React.forwardRef<
+  HTMLTableRowElement,
+  React.HTMLAttributes<HTMLTableRowElement>
+>(({ className, ...props }, ref) => (
+  <tr
+    ref={ref}
+    className={cn(
+      "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
+      className
+    )}
+    {...props}
+  />
+))
+TableRow.displayName = "TableRow"
+
+const TableHead = React.forwardRef<
+  HTMLTableCellElement,
+  React.ThHTMLAttributes<HTMLTableCellElement>
+>(({ className, ...props }, ref) => (
+  <th
+    ref={ref}
+    className={cn(
+      "h-10 px-2 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+      className
+    )}
+    {...props}
+  />
+))
+TableHead.displayName = "TableHead"
+
+const TableCell = React.forwardRef<
+  HTMLTableCellElement,
+  React.TdHTMLAttributes<HTMLTableCellElement>
+>(({ className, ...props }, ref) => (
+  <td
+    ref={ref}
+    className={cn(
+      "p-2 align-middle [&:has([role=checkbox])]:pr-0 [&>[role=checkbox]]:translate-y-[2px]",
+      className
+    )}
+    {...props}
+  />
+))
+TableCell.displayName = "TableCell"
+
+const TableCaption = React.forwardRef<
+  HTMLTableCaptionElement,
+  React.HTMLAttributes<HTMLTableCaptionElement>
+>(({ className, ...props }, ref) => (
+  <caption
+    ref={ref}
+    className={cn("mt-4 text-sm text-muted-foreground", className)}
+    {...props}
+  />
+))
+TableCaption.displayName = "TableCaption"
+
+export {
+  Table,
+  TableHeader,
+  TableBody,
+  TableFooter,
+  TableHead,
+  TableRow,
+  TableCell,
+  TableCaption,
+}
+</file>
+
+<file path="lib/providers/stripe.ts">
+import { WebhookProvider } from "./types";
+import crypto from 'crypto';
+
+export class StripeProvider implements WebhookProvider {
+  providerId = "stripe";
+
+  async verify(body: any, headers: any, secret: string): Promise<boolean> {
+    const signatureHeader= headers["stripe-signature"];
+    if(!signatureHeader || typeof signatureHeader !== "string") return false;
+
+    const [timeStampPart, signaturePart] = signatureHeader.split(",");
+    const timeStamp = timeStampPart.split("=")[1];
+    const signature = signaturePart.split("=")[1];
+
+    const timeStampNum= parseInt(timeStamp, 10);
+    const currentTime= Math.floor(Date.now() / 1000);
+
+    const timeDifference= Math.abs(currentTime - timeStampNum);
+
+    if (timeDifference > 300) {
+      console.warn("Stripe webhook timestamp is too old or too far in the future.");
+      return false;
+    }
+
+    const signedPayload= `${timeStamp}.${JSON.stringify(body)}`;
+
+    const hmac= crypto.createHmac("sha256", secret);
+    hmac.update(signedPayload);
+
+    const calculatedSignature= hmac.digest("hex");
+
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(calculatedSignature)
+    );
+  }
+}
+</file>
+
+<file path="lib/utils.ts">
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+</file>
+
+<file path="prisma/migrations/20260125114653_001_init/migration.sql">
+-- CreateEnum
+CREATE TYPE "EventStatus" AS ENUM ('PENDING', 'DELIVERED', 'FAILED');
+
+-- CreateTable
+CREATE TABLE "WebhookEvent" (
+    "id" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "source" TEXT NOT NULL,
+    "payload" JSONB NOT NULL,
+    "headers" JSONB NOT NULL,
+    "status" "EventStatus" NOT NULL DEFAULT 'PENDING',
+
+    CONSTRAINT "WebhookEvent_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "DeliveryAttempt" (
+    "id" TEXT NOT NULL,
+    "webhookEventId" TEXT NOT NULL,
+    "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "responseStatus" INTEGER NOT NULL,
+    "responseBody" TEXT,
+
+    CONSTRAINT "DeliveryAttempt_pkey" PRIMARY KEY ("id")
+);
+
+-- AddForeignKey
+ALTER TABLE "DeliveryAttempt" ADD CONSTRAINT "DeliveryAttempt_webhookEventId_fkey" FOREIGN KEY ("webhookEventId") REFERENCES "WebhookEvent"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+</file>
+
+<file path="prisma/migrations/20260302111548_add_endpoint_model/migration.sql">
+/*
+  Warnings:
+
+  - You are about to drop the column `source` on the `WebhookEvent` table. All the data in the column will be lost.
+  - Added the required column `endpointId` to the `WebhookEvent` table without a default value. This is not possible if the table is not empty.
+
+*/
+-- AlterTable
+ALTER TABLE "WebhookEvent" DROP COLUMN "source",
+ADD COLUMN     "endpointId" TEXT NOT NULL;
+
+-- CreateTable
+CREATE TABLE "WebhookEndpoint" (
+    "id" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "description" TEXT,
+    "targetUrl" TEXT NOT NULL,
+    "secret" TEXT NOT NULL,
+    "provider" TEXT NOT NULL,
+
+    CONSTRAINT "WebhookEndpoint_pkey" PRIMARY KEY ("id")
+);
+
+-- AddForeignKey
+ALTER TABLE "WebhookEvent" ADD CONSTRAINT "WebhookEvent_endpointId_fkey" FOREIGN KEY ("endpointId") REFERENCES "WebhookEndpoint"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+</file>
+
+<file path="prisma/migrations/migration_lock.toml">
+# Please do not edit this file manually
+# It should be added in your version-control system (e.g., Git)
+provider = "postgresql"
+</file>
+
+<file path="public/file.svg">
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+</file>
+
+<file path="public/globe.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+</file>
+
+<file path="public/next.svg">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+</file>
+
+<file path="public/vercel.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+</file>
+
+<file path="public/window.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+</file>
+
+<file path="components.json">
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "new-york",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "tailwind.config.js",
+    "css": "app/globals.css",
+    "baseColor": "slate",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "iconLibrary": "lucide",
+  "rtl": false,
+  "aliases": {
+    "components": "@/components",
+    "utils": "@/lib/utils",
+    "ui": "@/components/ui",
+    "lib": "@/lib",
+    "hooks": "@/hooks"
+  },
+  "registries": {}
+}
+</file>
+
+<file path="eslint.config.mjs">
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTs from "eslint-config-next/typescript";
+
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTs,
+  // Override default ignores of eslint-config-next.
+  globalIgnores([
+    // Default ignores of eslint-config-next:
+    ".next/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+  ]),
+]);
+
+export default eslintConfig;
+</file>
+
+<file path="next.config.ts">
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  /* config options here */
+};
+
+export default nextConfig;
+</file>
+
+<file path="postcss.config.js">
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+</file>
+
+<file path="postcss.config.mjs">
+const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+    darkMode: ["class"],
+    content: [
+    "./app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./pages/**/*.{js,ts,jsx,tsx,mdx}",
+    "./components/**/*.{js,ts,jsx,tsx,mdx}",
+  ],
+  theme: {
+  	extend: {
+  		borderRadius: {
+  			lg: 'var(--radius)',
+  			md: 'calc(var(--radius) - 2px)',
+  			sm: 'calc(var(--radius) - 4px)'
+  		},
+  		colors: {
+  			background: 'hsl(var(--background))',
+  			foreground: 'hsl(var(--foreground))',
+  			card: {
+  				DEFAULT: 'hsl(var(--card))',
+  				foreground: 'hsl(var(--card-foreground))'
+  			},
+  			popover: {
+  				DEFAULT: 'hsl(var(--popover))',
+  				foreground: 'hsl(var(--popover-foreground))'
+  			},
+  			primary: {
+  				DEFAULT: 'hsl(var(--primary))',
+  				foreground: 'hsl(var(--primary-foreground))'
+  			},
+  			secondary: {
+  				DEFAULT: 'hsl(var(--secondary))',
+  				foreground: 'hsl(var(--secondary-foreground))'
+  			},
+  			muted: {
+  				DEFAULT: 'hsl(var(--muted))',
+  				foreground: 'hsl(var(--muted-foreground))'
+  			},
+  			accent: {
+  				DEFAULT: 'hsl(var(--accent))',
+  				foreground: 'hsl(var(--accent-foreground))'
+  			},
+  			destructive: {
+  				DEFAULT: 'hsl(var(--destructive))',
+  				foreground: 'hsl(var(--destructive-foreground))'
+  			},
+  			border: 'hsl(var(--border))',
+  			input: 'hsl(var(--input))',
+  			ring: 'hsl(var(--ring))',
+  			chart: {
+  				'1': 'hsl(var(--chart-1))',
+  				'2': 'hsl(var(--chart-2))',
+  				'3': 'hsl(var(--chart-3))',
+  				'4': 'hsl(var(--chart-4))',
+  				'5': 'hsl(var(--chart-5))'
+  			}
+  		}
+  	}
+  },
+  plugins: ["tailwindcss-animate"]
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
+</file>
+
+<file path="app/dashboard/[endpointId]/page.tsx">
+import prisma from "@/lib/prisma";
+import { notFound } from "next/navigation";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import Link from "next/link";
+import { AutoRefresh } from "@/app/components/AutoRefresh";
+import { headers } from "next/headers";
+
+export default async function EndpointEventsPage(
+  {params,}: {params: Promise<{endpointId: string}>} 
+) {
+  const {endpointId}= await params;
+
+  const headerList= await headers();
+  const host= headerList.get("host")?? "localhost:3000";
+  const protocol= host.includes("localhost") ? "http" : "https";
+  const ingestUrl= `${protocol}://${host}/api/ingest/${endpointId}`;
+
+  const endpoint= await prisma.webhookEndpoint.findUnique({
+    where: {
+      id: endpointId
+    },
+    include: {
+      events: {
+        orderBy: {
+          createdAt: "desc"
+        },
+        take: 50
+      }
+    }
+  });
+
+  if (!endpoint) {
+    notFound();
+  }
+
+  return (
+    <div className="container mx-auto py-10 max-w-6xl">
+      <AutoRefresh interval={3000} /> {/* Refresh every 5 seconds */}
+      {/* Header Section */}
+      <div className="flex items-center gap-4 mb-8">
+        <Link href="/dashboard">
+          <Button variant="outline" size="sm">
+            &larr; Back
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold">{endpoint.description}</h1>
+          <p className="text-sm text-muted-foreground font-mono mt-1">
+            Target: {endpoint.targetUrl}
+          </p>
+        </div>
+      </div>
+
+      {/* Ingest URL Card */}
+      <div className="bg-muted/50 border rounded-lg p-4 mb-8 flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium mb-1">Your Ingest URL</p>
+          <code className="text-xs bg-background p-1.5 rounded border select-all">
+            {ingestUrl}
+          </code>
+        </div>
+        <Badge variant="outline" className="uppercase">{endpoint.provider} secured</Badge>
+      </div>
+
+      {/* Data Table Section */}
+      <div className="border rounded-md bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Status</TableHead>
+              <TableHead>Event ID</TableHead>
+              <TableHead>Timestamp</TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {endpoint.events.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                  No events received yet. Send a webhook to your ingest URL to get started.
+                </TableCell>
+              </TableRow>
+            ) : (
+              endpoint.events.map((event) => (
+                <TableRow key={event.id}>
+                  <TableCell>{getStatusBadge(event.status)}</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {event.id}
+                  </TableCell>
+                  <TableCell className="text-sm">
+                    {new Date(event.createdAt).toLocaleString()}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Link href={`/dashboard/event/${event.id}`}>
+                      <Button variant="outline" size="sm">
+                        View Details
+                      </Button>
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+const getStatusBadge= (status: string) => {
+  switch (status) {
+      case "DELIVERED":
+        return <Badge className="bg-green-600 hover:bg-green-700">Delivered</Badge>;
+      case "FAILED":
+        return <Badge variant="destructive">Failed</Badge>;
+      case "PENDING":
+        return <Badge variant="secondary" className="text-yellow-600 bg-yellow-100">Pending</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
+    }
+}
+</file>
+
+<file path="app/dashboard/event/[eventId]/page.tsx">
+import prisma from "@/lib/prisma";
+import { notFound } from "next/navigation";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { ReplayButton } from "@/app/components/ReplayButton";
+
+export default async function EventInspectorPage({
+  params,
+}: {
+  params: Promise<{ eventId: string }>;
+}) {
+  const { eventId } = await params;
+
+  // Fetch the event, including the endpoint it belongs to AND all delivery attempts
+  const event = await prisma.webhookEvent.findUnique({
+    where: { id: eventId },
+    include: {
+      endpoint: true,
+      attempts: {
+        orderBy: { timestamp: "desc" },
+      },
+    },
+  });
+
+  if (!event) {
+    notFound();
+  }
+
+  const isSuccess = event.status === "DELIVERED";
+
+  return (
+    <div className="container mx-auto py-10 max-w-5xl">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center gap-4">
+          <Link href={`/dashboard/${event.endpointId}`}>
+            <Button variant="outline" size="sm">
+              &larr; Back to Endpoint
+            </Button>
+          </Link>
+          <h1 className="text-2xl font-bold font-mono text-muted-foreground tracking-tight">
+            Event: {event.id}
+          </h1>
+        </div>
+        <div className="flex items-center gap-4">
+            <Badge variant={isSuccess ? "default" : "destructive"} className={isSuccess ? "bg-green-600" : ""}>
+              {event.status}
+            </Badge>
+            {event.status === "FAILED" || event.status === "PENDING" && (
+              <ReplayButton eventId={event.id} />
+            )}
+        </div>
+    </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column: Payload & Headers */}
+        <div className="lg:col-span-2 space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                JSON Payload
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <pre className="bg-muted p-4 rounded-md overflow-x-auto text-sm font-mono text-foreground">
+                {JSON.stringify(event.payload, null, 2)}
+              </pre>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                Headers
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <pre className="bg-muted p-4 rounded-md overflow-x-auto text-sm font-mono text-muted-foreground">
+                {JSON.stringify(event.headers, null, 2)}
+              </pre>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Right Column: Delivery Attempts & Metadata */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                Delivery Log
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {event.attempts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No delivery attempts yet.</p>
+              ) : (
+                event.attempts.map((attempt, index) => (
+                  <div key={attempt.id} className="text-sm border-b last:border-0 pb-4 last:pb-0">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium">Attempt #{event.attempts.length - index}</span>
+                      <Badge variant={attempt.responseStatus >= 200 && attempt.responseStatus < 300 ? "outline" : "destructive"}>
+                        HTTP {attempt.responseStatus}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      {new Date(attempt.timestamp).toLocaleString()}
+                    </p>
+                    {attempt.responseBody && (
+                      <pre className="bg-muted p-2 rounded text-xs font-mono overflow-x-auto max-h-32">
+                        {attempt.responseBody}
+                      </pre>
+                    )}
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="app/actions.ts">
+"use server";
+
+import prisma from "@/lib/prisma";
+import { Client } from "@upstash/qstash";
+import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+
+const qstash= new Client({
+  token: process.env.QSTASH_TOKEN!,
+});
+
+export async function replayWebhook(eventId: string) {
+  try {
+    const event = await prisma.webhookEvent.findUnique({
+      where: { id: eventId },
+      });
+    
+    if (!event) {
+      throw new Error("Event not found");
+    }
+
+    if(event.status === "DELIVERED") {
+      return { success: false, error: "Event already delivered successfully" };
+    }
+    
+    const headersList = await headers();
+    const host = headersList.get("host") || "localhost:3000";
+    const protocol = host.includes("localhost") ? "http" : "https";
+    const workerUrl = `${protocol}://${host}/api/worker`;
+
+    await qstash.publishJSON({
+      url: workerUrl,
+      body: { eventId: event.id },
+    });
+    
+    await prisma.webhookEvent.update({
+      where: { id: eventId },
+      data: { status: "PENDING" },
+    });
+
+    revalidatePath(`/dashboard/event/${eventId}`);
+    revalidatePath(`/dashboard/${event.endpointId}`);
+
+    return { success: true }; 
+  }
+  catch (error) {
+    console.error("Error enqueuing replay:", error);
+    return { success: false, error: "Failed to enqueue replay" };
+  }
+}
+</file>
+
+<file path="app/layout.tsx">
+// app/layout.tsx
+import "@/app/globals.css"; // Shadcn created this file during init
+
+export const metadata = {
+  title: "HookDeck",
+  description: "Enterprise Webhook Management",
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en">
+      <body className="antialiased min-h-screen bg-background">
+        {children}
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="lib/providers/none.ts">
+import { WebhookProvider } from "./types";
+
+export class NoneProvider implements WebhookProvider {
+  providerId = "none";
+
+  async verify(body: any, headers: any, secret: string): Promise<boolean> {
+    return true; // Always trust (for manual testing)
+  }
+}
+</file>
+
+<file path="lib/providers/types.ts">
+// lib/providers/types.ts
+
+// The contract every provider must satisfy
+export interface WebhookProvider {
+  /**
+   * Unique identifier (e.g., 'stripe', 'github')
+   */
+  providerId: string;
+
+  /**
+   * Validates the incoming request (HMAC signature check)
+   * Returns true if valid, false if forged.
+   */
+  verify(body: any, headers: any, secret: string): Promise<boolean>;
+}
+</file>
+
+<file path="lib/prisma.ts">
+import { PrismaClient } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
+
+const globalForPrisma = global as unknown as {
+    prisma: PrismaClient
+}
+
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL,
+})
+
+const prisma = globalForPrisma.prisma || new PrismaClient({
+  adapter,
+})
+
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma
+
+export default prisma
+</file>
+
+<file path="prisma/schema.prisma">
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model WebhookEndpoint {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  description String?
+  targetUrl   String
+  
+  secret      String
+  provider    String
+  
+  events    WebhookEvent[]
+}
+
+model WebhookEvent {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  
+  endpointId String
+  endpoint   WebhookEndpoint @relation(fields: [endpointId], references: [id])
+  
+  payload   Json
+  headers   Json
+  status    EventStatus @default(PENDING)
+  
+  attempts  DeliveryAttempt[]
+}
+
+model DeliveryAttempt {
+  id             String       @id @default(uuid())
+  webhookEventId String
+  webhookEvent   WebhookEvent @relation(fields: [webhookEventId], references: [id])
+  
+  timestamp      DateTime     @default(now())
+  
+  responseStatus Int
+
+  responseBody   String?
+}
+
+enum EventStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+</file>
+
+<file path="prisma/seed.ts">
+import { PrismaClient } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
+// This special import loads .env automatically before anything else runs
+import 'dotenv/config' 
+
+const adapter = new PrismaPg({
+  connectionString: process.env.DATABASE_URL,
+})
+
+
+const prisma = new PrismaClient({
+  adapter,
+})
+
+async function main() {
+  console.log("Seeding database...");
+  
+  // Create the endpoint
+  const endpoint = await prisma.webhookEndpoint.create({
+    data: {
+      description: "Local Test Endpoint",
+      // YOUR Webhook.site URL
+      targetUrl: "https://webhook.site/5ddb74a5-12b0-4025-994a-ed2422219e42", 
+      provider: "none",
+      secret: "my_secret_key_123" 
+    }
+  })
+
+  console.log("------------------------------------------------")
+  console.log("✅ Created Endpoint ID:", endpoint.id)
+  console.log("YOUR NEW INGEST URL:")
+  console.log(`http://localhost:3000/api/ingest/${endpoint.id}`)
+  console.log("------------------------------------------------")
+}
+
+main()
+  .then(async () => {
+    await prisma.$disconnect()
+  })
+  .catch(async (e) => {
+    console.error(e)
+    await prisma.$disconnect()
+    process.exit(1)
+  })
+</file>
+
+<file path=".gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+/app/generated/prisma
+
+/app/generated/prisma
+</file>
+
+<file path="prisma.config.ts">
+import 'dotenv/config'
+import { defineConfig, env } from 'prisma/config';
+
+export default defineConfig({
+  schema: 'prisma/schema.prisma',
+  migrations: {
+    path: 'prisma/migrations',
+    seed: 'tsx prisma/seed.ts',
+  },
+  datasource: {
+    url: env('DATABASE_URL'),
+  },
+});
+</file>
+
+<file path="lib/providers/factory.ts">
+import { WebhookProvider } from "./types";
+import { NoneProvider } from "./none";
+import { GitHubProvider } from "./github";
+import { StripeProvider } from "./stripe";
+
+
+const providers: Record<string, WebhookProvider> = {
+  
+  // List of available providers
+  none: new NoneProvider(),
+
+  github: new GitHubProvider(),
+
+  stripe: new StripeProvider(),
+
+};
+
+export function getProvider(source: string): WebhookProvider {
+  return providers[source] || providers["none"];
+}
+</file>
+
+<file path="lib/providers/github.ts">
+import { WebhookProvider } from "./types";
+
+import crypto from "crypto";
+
+export class GitHubProvider implements WebhookProvider {
+
+  providerId = "github";
+
+  async verify(body: any, headers: any, secret: string): Promise<boolean> {
+    
+    const signature= headers["x-hub-signature-256"];
+
+    if(!signature || typeof signature !== "string") return false;
+
+    const hmac= crypto.createHmac("sha256", secret);
+    hmac.update(JSON.stringify(body));
+
+    const calculated = `sha256=${hmac.digest("hex")}`;
+
+    // Constant-time comparison to prevent timing attacks
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(calculated)
+    );
+  }
+}
+</file>
+
+<file path="README.md">
+# EventForge
+
+EventForge is a **webhook ingestion + delivery** app built with **Next.js (App Router)**, **PostgreSQL + Prisma**, and **Upstash QStash** for reliable background delivery and replays.
+
+It lets you:
+- Define **webhook endpoints** (a target URL + metadata)
+- **Ingest** events (store payload + headers)
+- **Deliver** events to the destination URL
+- Track delivery status (**PENDING / DELIVERED / FAILED**) and **delivery attempts**
+- **Replay** a webhook event (re-queue delivery via QStash)
+
+---
+
+## Tech Stack
+
+- **Framework**: Next.js (App Router)
+- **Language**: TypeScript / React
+- **Database**: PostgreSQL
+- **ORM**: Prisma (with `@prisma/adapter-pg`)
+- **Queue / Delivery**: Upstash **QStash**
+- **UI**: Tailwind CSS + Radix UI (shadcn-style components)
+
+---
+
+## High-Level Architecture
+
+### Components
+
+- **Next.js App (UI + API routes)**
+  - Dashboard pages under `app/dashboard/*`
+  - Server actions in `app/actions.ts`
+  - API routes under `app/api/*`
+- **PostgreSQL**
+  - Stores endpoints, webhook events, and delivery attempts
+- **QStash**
+  - Handles asynchronous delivery and retries
+  - Event replays are re-queued into QStash
+
+### Delivery Flow (simplified)
+
+1. **Webhook received** (ingestion endpoint)
+2. App **persists** event data in Postgres via Prisma
+3. App **queues** a delivery job to **QStash**
+4. QStash calls **`POST /api/worker`**
+5. Worker fetches the stored event + endpoint and **POSTs to the target URL**
+6. Worker stores a **DeliveryAttempt** and updates event status to **DELIVERED** or **FAILED**
+7. If failed, worker returns **500** so QStash can retry (based on QStash settings)
+
+### Replay Flow
+
+1. User clicks replay in UI
+2. Server action `replayWebhook(eventId)` updates status back to **PENDING**
+3. Server action publishes a QStash job to call **`/api/worker`**
+4. Worker re-delivers and logs another attempt
+
+---
+
+## Data Model (Prisma)
+
+The database schema lives in `prisma/schema.prisma` and includes:
+
+- `WebhookEndpoint`
+  - `targetUrl`, `secret`, `provider`, `description`, timestamps
+- `WebhookEvent`
+  - links to an endpoint
+  - stores `payload` and `headers` as JSON
+  - `status`: `PENDING | DELIVERED | FAILED`
+- `DeliveryAttempt`
+  - linked to a `WebhookEvent`
+  - stores `responseStatus` and truncated `responseBody`
+
+---
+
+## Project Structure
+
+```txt
+.
+├── app/
+│   ├── actions.ts                 # server actions (ex: replay)
+│   ├── api/
+│   │   ├── worker/route.ts         # delivers events to target URL
+│   │   └── ingest/                 # ingestion route folder exists (implementation may vary)
+│   ├── components/
+│   │   ├── AutoRefresh.tsx
+│   │   └── ReplayButton.tsx
+│   ├── dashboard/
+│   │   ├── page.tsx                # lists endpoints
+│   │   ├── [endpointId]/           # exists in repo (dynamic route)
+│   │   └── event/[eventId]/        # exists in repo (dynamic route)
+│   ├── globals.css
+│   └── layout.tsx
+├── components/
+│   └── ui/                         # shared UI components (Radix/shadcn style)
+├── lib/
+│   ├── prisma.ts                   # Prisma client + pg adapter
+│   └── utils.ts
+├── prisma/
+│   ├── schema.prisma
+│   ├── seed.ts
+│   └── migrations/
+├── public/
+├── package.json
+└── next.config.ts
+```
+
+---
+
+## Setup
+
+### Prerequisites
+
+- Node.js (recommended: latest LTS)
+- PostgreSQL database
+- An Upstash QStash account + token
+
+### 1) Install dependencies
+
+```bash
+npm install
+```
+
+### 2) Configure environment variables
+
+Create a `.env` file in the project root:
+
+```bash
+# PostgreSQL
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DB?schema=public"
+
+# Upstash QStash
+QSTASH_TOKEN="YOUR_QSTASH_TOKEN"
+```
+
+Notes:
+- `DATABASE_URL` is required by Prisma and the pg adapter (`lib/prisma.ts`).
+- `QSTASH_TOKEN` is required for replay + queue publishing (`app/actions.ts`).
+
+### 3) Set up the database (Prisma)
+
+Generate Prisma client:
+
+```bash
+npx prisma generate
+```
+
+Run migrations (choose the command that matches your workflow):
+
+```bash
+npx prisma migrate dev
+```
+
+(Optional) Seed sample data:
+
+```bash
+npx prisma db seed
+```
+
+> The UI dashboard mentions seeding if no endpoints exist.
+
+### 4) Run the app
+
+```bash
+npm run dev
+```
+
+Open:
+
+- `http://localhost:3000`
+
+---
+
+## API
+
+### `POST /api/worker`
+
+This route is intended to be called by QStash (and can be used locally for testing).
+
+**Request body:**
+```json
+{ "eventId": "..." }
+```
+
+**Behavior:**
+- Loads the webhook event + endpoint from DB
+- Sends `POST` to the endpoint’s `targetUrl`
+- Stores a `DeliveryAttempt`
+- Updates status: `DELIVERED` if 2xx else `FAILED`
+- Returns `500` on failed delivery to encourage QStash retry
+
+---
+
+## Dashboard
+
+### `GET /dashboard`
+
+Shows a list of webhook endpoints and total event counts per endpoint.
+
+Other dynamic routes exist in the repo:
+- `app/dashboard/[endpointId]/...`
+- `app/dashboard/event/[eventId]/...`
+
+(These typically show per-endpoint events and per-event details / attempts.)
+
+---
+
+## Development Notes
+
+- Prisma client is created in `lib/prisma.ts` and cached globally in non-production to avoid hot-reload connection issues.
+- Replay uses a server action (`app/actions.ts`) and publishes a QStash job targeting `/api/worker`.
+- Tailwind CSS is configured via `tailwind.config.js`.
+
+---
+
+## Scripts
+
+From `package.json`:
+
+```bash
+npm run dev      # start dev server
+npm run build    # build production bundle
+npm run start    # start production server
+npm run lint     # run eslint
+```
+
+---
+</file>
+
+<file path="package.json">
+{
+  "name": "hookdock",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.3.0",
+    "@prisma/client": "^7.3.0",
+    "@radix-ui/react-separator": "^1.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
+    "@upstash/qstash": "^2.8.4",
+    "axios": "^1.13.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.576.0",
+    "next": "16.1.4",
+    "prisma": "^7.3.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss-animate": "^1.0.7",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "autoprefixer": "^10.4.27",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.4",
+    "postcss": "^8.5.8",
+    "tailwindcss": "^3.4.1",
+    "tsx": "^4.22.0",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="app/api/worker/route.ts">
+import prisma from "@/lib/prisma";
+import { NextResponse, NextRequest } from "next/server";
+import { Receiver } from "@upstash/qstash";
+import { z } from "zod";
+
+const workerBodySchema = z.object({
+  eventId: z.string().uuid("eventId must be a valid UUID"),
+});
+
+// QStash Receiver verifies that this request genuinely came from Upstash
+const receiver = new Receiver({
+  currentSigningKey: process.env.QSTASH_CURRENT_SIGNING_KEY!,
+  nextSigningKey: process.env.QSTASH_NEXT_SIGNING_KEY!,
+});
+
+export async function POST(request: NextRequest) {
+
+  const rawBody = await request.text();
+
+  const isValid = await receiver.verify({
+    signature: request.headers.get("upstash-signature") ?? "",
+    body: rawBody,
+  }).catch(() => false); // verify() throws on failure; we convert to false
+
+  if (!isValid) {
+    console.warn("Worker received request with invalid QStash signature — rejected.");
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let parsedBody: { eventId: string };
+  try {
+    const json = JSON.parse(rawBody);
+    const result = workerBodySchema.safeParse(json);
+
+    if (!result.success) {
+      console.warn("Worker received invalid body:", result.error.issues);
+      return NextResponse.json(
+        { error: "Invalid request body", details: result.error.issues },
+        { status: 400 }
+      );
+    }
+    parsedBody = result.data;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const { eventId } = parsedBody;
+
+  try {
+    const webhookEvent = await prisma.webhookEvent.findUnique({
+      where: { id: eventId },
+      include: { endpoint: true },
+    });
+
+    if (!webhookEvent || !webhookEvent.endpoint) {
+      return NextResponse.json(
+        { error: "Webhook event or endpoint not found" },
+        { status: 404 }
+      );
+    }
+
+    const DESTINATION_URL = webhookEvent.endpoint.targetUrl;
+
+    let responseStatus = 0;
+    let responseBody = "";
+    const start = Date.now();
+
+    try {
+      const res = await fetch(DESTINATION_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Webhook-Event-ID": webhookEvent.id,
+        },
+        body: JSON.stringify(webhookEvent.payload),
+      });
+
+      responseStatus = res.status;
+      responseBody = await res.text();
+      console.log(`Delivery to ${DESTINATION_URL} → HTTP ${responseStatus}`);
+    } catch (fetchError) {
+      console.error("Network error delivering webhook:", fetchError);
+      responseStatus = 500;
+      responseBody = String(fetchError);
+    }
+
+    const duration = Date.now() - start;
+
+    // Log the attempt and update status
+    await prisma.deliveryAttempt.create({
+      data: {
+        webhookEventId: webhookEvent.id,
+        responseStatus,
+        responseBody: responseBody.slice(0, 2000),
+      },
+    });
+
+    const isSuccess = responseStatus >= 200 && responseStatus < 300;
+
+    await prisma.webhookEvent.update({
+      where: { id: webhookEvent.id },
+      data: { status: isSuccess ? "DELIVERED" : "FAILED" },
+    });
+
+    if (isSuccess) {
+      console.log(`Event ${webhookEvent.id} delivered in ${duration}ms`);
+      return NextResponse.json({ message: "Delivered successfully" }, { status: 200 });
+    } else {
+      // Return 500 to signal QStash to retry
+      console.warn(`Event ${webhookEvent.id} delivery failed (HTTP ${responseStatus})`);
+      return NextResponse.json({ error: "Delivery failed" }, { status: 500 });
+    }
+  } catch (error) {
+    console.error("Unexpected worker error:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+</file>
+
+</files>

@@ -38,7 +38,7 @@ model WebhookEvent {
 model DeliveryAttempt {
   id             String       @id @default(uuid())
   webhookEventId String
-  webhookEvent   WebhookEvent @relation(fields: [webhookEventId], references: [id])
+  webhookEvent   WebhookEvent @relation(fields: [webhookEventId], references: [id]) //ORM abstracts the relation, but we can still query by webhookEventId
   
   timestamp      DateTime     @default(now())
   
